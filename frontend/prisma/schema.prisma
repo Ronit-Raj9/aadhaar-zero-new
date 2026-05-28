@@ -1,0 +1,265 @@
+// Prisma Schema for Aadhaar-Zero
+// Privacy-Preserving KYC System
+// NOTE: This schema requires PostgreSQL (uses Json fields).
+// SQLite does not support Json columns; use-sqlite-for-demo.sh will not work without migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---- Enums ----
+
+enum UserRole {
+  USER
+  VERIFIER
+  ISSUER
+  ADMIN
+}
+
+enum CredentialType {
+  AADHAAR
+  PAN
+  DL
+  VOTER_ID
+  PASSPORT
+  CUSTOM
+}
+
+enum VerificationStatus {
+  SUCCESS
+  FAILED
+  PENDING
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AuditEventType {
+  CREDENTIAL_ISSUED
+  VERIFICATION
+  REVOCATION
+  CONSENT_RECORDED
+  USER_REGISTERED
+  LOGIN
+  LOGOUT
+  PROOF_GENERATED
+  DATA_ERASURE
+}
+
+enum VerificationRequestStatus {
+  PENDING
+  FULFILLED
+  EXPIRED
+}
+
+// ---- Models ----
+
+model User {
+  id            String    @id @default(uuid())
+  walletAddress String    @unique
+  email         String?   @unique
+  name          String
+  passwordHash  String?
+  role          UserRole  @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+  isActive      Boolean   @default(true)
+
+  credentials        Credential[]
+  deviceFingerprints DeviceFingerprint[]
+  riskProfile        RiskProfile?
+  auditLogs          AuditLog[]
+  sessions           Session[]
+
+  @@index([walletAddress])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+model Credential {
+  id               String         @id @default(uuid())
+  userId           String
+  credentialType   CredentialType
+  credentialHash   String         @unique
+  attributes       Json           // Encrypted credential attributes
+  signature        String         // BBS+ signature
+  bbsSignature     String?        // Real BBS+ signature blob
+  issuerAddress    String
+  issuedAt         DateTime       @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  revocationReason String?
+  blockchainTxHash String?        // On-chain revocation tx hash
+  metadata         Json?          // Document images refs, OCR results, etc.
+
+  user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verifications        Verification[]
+  verificationRequests VerificationRequest[]
+
+  @@index([userId, credentialType])
+  @@index([credentialHash])
+  @@index([issuerAddress])
+}
+
+model Verification {
+  id                 String             @id @default(uuid())
+  credentialId       String
+  verifierAddress    String
+  verifierName       String
+  nullifier          String             @unique
+  consentHash        String
+  revealedAttributes Json
+  purpose            String
+  riskScore          Int                @default(0)
+  riskLevel          RiskLevel          @default(LOW)
+  verificationStatus VerificationStatus @default(PENDING)
+  blockchainTxHash   String?
+  timestamp          DateTime           @default(now())
+  metadata           Json?              // IP, device info, location
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([nullifier])
+  @@index([verifierAddress, timestamp])
+  @@index([credentialId])
+}
+
+model NullifierCache {
+  nullifier       String   @id
+  isUsed          Boolean  @default(false)
+  verifierAddress String?
+  usedAt          DateTime?
+  expiresAt       DateTime
+}
+
+model AuditLog {
+  id               String         @id @default(uuid())
+  eventType        AuditEventType
+  userId           String?
+  credentialId     String?
+  verificationId   String?
+  metadata         Json?
+  merkleTreeIndex  Int?
+  merkleProof      Json?
+  merkleRoot       String?
+  blockchainTxHash String?
+  timestamp        DateTime       @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([timestamp])
+  @@index([eventType])
+  @@index([userId])
+}
+
+model MerkleTreeBatch {
+  id              String   @id @default(uuid())
+  batchNumber     Int      @unique
+  merkleRoot      String
+  logCount        Int
+  anchoredAt      DateTime @default(now())
+  blockchainTxHash String
+  leaves          Json     // Array of log hashes in this batch
+
+  @@index([merkleRoot])
+  @@index([batchNumber])
+}
+
+model DeviceFingerprint {
+  id                    String   @id @default(uuid())
+  userId                String
+  fingerprintHash       String
+  deviceModel           String?
+  osVersion             String?
+  appVersion            String?
+  playIntegrityVerdict  Json?
+  trustScore            Int      @default(50)
+  firstSeen             DateTime @default(now())
+  lastSeen              DateTime @default(now())
+  verificationCount     Int      @default(0)
+  flaggedAsSuspicious   Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, fingerprintHash])
+  @@index([fingerprintHash])
+}
+
+model RiskProfile {
+  id                   String   @id @default(uuid())
+  userId               String   @unique
+  baselineRiskScore    Int      @default(0)
+  behavioralProfile    Json?    // Typing speed, swipe patterns, etc.
+  locationHistory      Json?    // Array of {lat, lon, timestamp}
+  verificationPatterns Json?    // Time of day, frequency, etc.
+  flaggedForReview     Boolean  @default(false)
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationRequest {
+  id                  String                    @id @default(uuid())
+  verifierAddress     String
+  verifierName        String
+  credentialType      CredentialType
+  requestedAttributes String[]
+  nonce               String                    @default(uuid())
+  purpose             String
+  status              VerificationRequestStatus @default(PENDING)
+  credentialId        String?
+  proofSubmitted      Boolean                   @default(false)
+  createdAt           DateTime                  @default(now())
+  expiresAt           DateTime
+
+  credential Credential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+
+  @@index([verifierAddress])
+  @@index([status])
+}
+
+model MerkleLeaf {
+  id        String    @id @default(uuid())
+  leafHash  String    @unique
+  batchId   String?
+  txHash    String?
+  createdAt DateTime  @default(now())
+  anchoredAt DateTime?
+
+  @@index([batchId])
+  @@index([anchoredAt])
+}
+
+model BenchmarkResult {
+  id                    String   @id @default(uuid())
+  operation             String   // 'zkp_generation', 'onchain_verification', 'document_verify', 'liveness', 'e2e'
+  durationMs            Int
+  gasUsed               BigInt?
+  metadata              Json?
+  createdAt             DateTime @default(now())
+
+  @@index([operation])
+  @@index([createdAt])
+}
