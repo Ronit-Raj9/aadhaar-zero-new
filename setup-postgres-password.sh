@@ -1,0 +1,23 @@
+#!/bin/bash
+# Script to help set PostgreSQL password for the hackathon demo
+
+echo "==================================================="
+echo "PostgreSQL Password Setup for Aadhaar-Zero"
+echo "==================================================="
+echo ""
+echo "To complete the database setup, please run:"
+echo ""
+echo "  sudo -u postgres psql -c \"ALTER USER postgres PASSWORD 'postgres';\""
+echo ""
+echo "OR if you prefer a different password, update both:"
+echo "  1. PostgreSQL: sudo -u postgres psql -c \"ALTER USER postgres PASSWORD 'YOUR_PASSWORD';\""
+echo "  2. .env files: Update DATABASE_URL in frontend/.env.local and frontend/.env"
+echo ""
+echo "After setting the password, run:"
+echo "  cd frontend && npx prisma db push"
+echo ""
+echo "==================================================="
+echo ""
+echo "Alternatively, for a QUICK DEMO setup (SQLite, no password needed):"
+echo "  Run: ./use-sqlite-for-demo.sh"
+echo ""
